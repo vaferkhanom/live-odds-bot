@@ -38,6 +38,9 @@ def _american_to_decimal(odds: float) -> float:
 class EspnSource(Source):
     name = "espn"
 
+    # Max per-cycle summary fetches (live events lacking scoreboard odds only).
+    SUMMARY_CAP = 15
+
     def fetch_live(self, sport: str) -> list[LiveEvent]:
         path = SPORT_PATHS.get(sport)
         if not path:
@@ -71,7 +74,73 @@ class EspnSource(Source):
                 markets=markets,
                 raw_score="",
             ))
+        # Scoreboards often omit odds for live games; the per-event summary
+        # endpoint still carries book prices. Backfill live events only.
+        summaries = 0
+        for ev in events:
+            if ev.markets or not ev.is_live or summaries >= self.SUMMARY_CAP:
+                continue
+            extra = self._summary_markets(path, ev.event_id)
+            if extra:
+                ev.markets.extend(extra)
+                summaries += 1
         return events
+
+    def _summary_markets(self, path: str, event_id: str) -> list[MarketPrice]:
+        """Parse DraftKings odds from the event summary endpoint."""
+        try:
+            data = get_json(f"{BASE}/{path}/summary?event={event_id}",
+                            user_agent=ESPN_UA)
+        except Exception:
+            return []
+        out: list[MarketPrice] = []
+        for odds in data.get("pickcenter") or data.get("odds") or []:
+            try:
+                out.extend(self._parse_summary_odds(odds))
+            except Exception:
+                continue
+        return out
+
+    @staticmethod
+    def _moneyline_value(node) -> float | None:
+        if not isinstance(node, dict):
+            return None
+        for key in ("moneyLine", "moneyline", "summary", "odds", "value"):
+            if node.get(key) not in (None, ""):
+                try:
+                    return float(node[key])
+                except (TypeError, ValueError):
+                    pass
+        return None
+
+    def _parse_summary_odds(self, odds: dict) -> list[MarketPrice]:
+        found: list[MarketPrice] = []
+        outcomes: list[OutcomePrice] = []
+        home = self._moneyline_value(odds.get("homeTeamOdds"))
+        away = self._moneyline_value(odds.get("awayTeamOdds"))
+        draw = self._moneyline_value(odds.get("drawOdds"))
+        if home is not None:
+            outcomes.append(OutcomePrice(name="home", decimal_odds=_american_to_decimal(home)))
+        if away is not None:
+            outcomes.append(OutcomePrice(name="away", decimal_odds=_american_to_decimal(away)))
+        if draw is not None:
+            outcomes.append(OutcomePrice(name="draw", decimal_odds=_american_to_decimal(draw)))
+        if len(outcomes) >= 2:
+            found.append(MarketPrice(
+                market_type="1x2" if draw is not None else "moneyline",
+                line=None, outcomes=outcomes))
+        ou = odds.get("overUnder")
+        try:
+            over = float(odds.get("overOdds")) if odds.get("overOdds") not in (None, "") else None
+            under = float(odds.get("underOdds")) if odds.get("underOdds") not in (None, "") else None
+        except (TypeError, ValueError):
+            over = under = None
+        if ou is not None and over is not None and under is not None:
+            found.append(MarketPrice(market_type="total", line=str(ou), outcomes=[
+                OutcomePrice(name="over", decimal_odds=_american_to_decimal(over)),
+                OutcomePrice(name="under", decimal_odds=_american_to_decimal(under)),
+            ]))
+        return found
 
     def _parse_market(self, odds: dict, details: str) -> MarketPrice | None:
         outcomes: list[OutcomePrice] = []
