@@ -11,6 +11,7 @@ from .analysis import pipeline
 from .feeds.base import LiveEvent, Source
 from .feeds.espn import EspnSource
 from .feeds.kalshi import KalshiSource
+from .feeds.oddsapi import PROVIDER as ODDS_PROVIDER, OddsAPIExhausted, TheOddsAPISource
 from .feeds.polymarket import PolymarketSource
 from .notify import format_alert, format_result, in_quiet_hours, send_with_backoff
 from .settle import settle
@@ -19,6 +20,9 @@ from .store import Store
 log = logging.getLogger("live-odds-bot")
 
 SOURCES: list[Source] = [EspnSource(), PolymarketSource(), KalshiSource()]
+
+# Preferred primary order: user-supplied API key first, then ESPN.
+PRIMARY_PREFERENCE = ("oddsapi", "espn")
 
 # Per-source call budget per cycle; exhausted meters degrade instead of dying
 CALL_BUDGET = {"espn": 40, "polymarket": 20, "kalshi": 20}
@@ -69,31 +73,54 @@ FETCH_TIMEOUT = 12
 MAX_CONCURRENT_FETCHES = 8
 
 
-async def _fetch_one(sem: asyncio.Semaphore, src: Source, sport: str):
+async def _fetch_one(sem: asyncio.Semaphore, src: Source, sport: str,
+                     store: Store | None = None):
     async with sem:
         try:
             evs = await asyncio.wait_for(
                 asyncio.to_thread(src.fetch_live, sport), timeout=FETCH_TIMEOUT)
+            if isinstance(src, TheOddsAPISource) and store is not None:
+                store.update_api_quota(ODDS_PROVIDER, src.last_used, src.last_remaining)
             return src.name, sport, evs or []
+        except OddsAPIExhausted as exc:
+            if store is not None:
+                src_obj = src if isinstance(src, TheOddsAPISource) else None
+                store.update_api_quota(
+                    ODDS_PROVIDER,
+                    src_obj.last_used if src_obj else None,
+                    0, status="exhausted")
+                log.warning("odds api exhausted: %s", exc)
+            return src.name, sport, []
         except Exception as exc:
             log.warning("feed %s failed for %s: %s", src.name, sport, exc)
             return src.name, sport, []
 
 
+def cycle_sources(store: Store) -> list[Source]:
+    """Source list for one cycle. A usable API key goes FIRST (highest priority)."""
+    sources: list[Source] = list(SOURCES)
+    row = store.get_api_key(ODDS_PROVIDER)
+    if row and row["api_key"] and row["status"] == "active":
+        sources.insert(0, TheOddsAPISource(row["api_key"]))
+    return sources
+
+
 async def run_cycle(store: Store, bot=None) -> dict:
     """One monitor pass over all catalog sports. Returns cycle stats."""
     stats = {"evaluated": 0, "alerted": 0, "discarded": 0, "degraded": []}
+    sources = cycle_sources(store)
     remaining = dict(CALL_BUDGET)
+    remaining.setdefault("oddsapi", 10)  # tight budget: key quota is precious
     sem = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
     jobs = []
     for sport in catalog.all_sports():
-        for src in SOURCES:
+        for src in sources:
             if remaining.get(src.name, 0) <= 0:
                 if src.name not in stats["degraded"]:
                     stats["degraded"].append(src.name)
                 continue
             remaining[src.name] -= 1
-            jobs.append(_fetch_one(sem, src, sport))
+            jobs.append(_fetch_one(sem, src, sport, store))
     per_sport: dict[str, dict[str, list[LiveEvent]]] = {}
     for name, sport, evs in await asyncio.gather(*jobs):
         per_sport.setdefault(sport, {})[name] = evs
@@ -102,7 +129,7 @@ async def run_cycle(store: Store, bot=None) -> dict:
         # Build one candidate pool from ALL sources, joined by fuzzy
         # fixture matching, so any single-source outage degrades gracefully.
         pool: list[LiveEvent] = []
-        for src in SOURCES:
+        for src in sources:
             for ev in per_source.get(src.name, []):
                 if not ev.markets:
                     continue
@@ -126,9 +153,13 @@ async def run_cycle(store: Store, bot=None) -> dict:
                                  "single-source-only")
                 stats["discarded"] += 1
                 continue
-            # Primary = ESPN event when present, else first available.
+            # Primary = API-key source first, then ESPN, else first available.
             by_source = {e.source_name: e for e in members}
-            ev = by_source.get("espn") or members[0]
+            ev = members[0]
+            for preferred in PRIMARY_PREFERENCE:
+                if preferred in by_source:
+                    ev = by_source[preferred]
+                    break
             corroborating = [e for e in members if e is not ev]
             if not catalog.is_monitored(ev.sport, ev.markets[0].market_type):
                 store.upsert_gap(ev.sport, ev.markets[0].market_type,
@@ -150,7 +181,31 @@ async def run_cycle(store: Store, bot=None) -> dict:
         stats["settled"] = await settle_open(store, bot)
     else:
         stats["settled"] = await settle_open(store)
+    await check_api_exhaustion(store, bot)
     return stats
+
+
+async def check_api_exhaustion(store: Store, bot=None) -> bool:
+    """Notify once when the API key is exhausted. Returns True if notified now."""
+    row = store.get_api_key(ODDS_PROVIDER)
+    if not row or row["status"] != "exhausted" or row["notified"]:
+        return False
+    store.mark_api_notified(ODDS_PROVIDER)
+    if bot is None:
+        return True
+    text = ("⚠️ API key exhausted — quota reached its limit.\n"
+            "Switched back to free feeds. Send /api status to check, "
+            "or /api set <new-key> to restore priority data.")
+    sent_any = False
+    seen: set[str] = set()
+    for tier in ("obvious", "value"):
+        for sub in store.subscribers_for_tier(tier):
+            if sub["chat_id"] in seen:
+                continue
+            seen.add(sub["chat_id"])
+            if await send_with_backoff(bot, sub["chat_id"], text):
+                sent_any = True
+    return sent_any
 
 
 async def settle_open(store: Store, bot=None) -> int:

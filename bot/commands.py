@@ -1,12 +1,15 @@
 """Command handlers. Auth-gated: only AUTHORIZED_CHAT_IDS may operate the bot."""
 from __future__ import annotations
 
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from . import config
 from .analysis import markets as catalog
-from .notify import format_record, format_stats, format_status
+from .feeds.oddsapi import PROVIDER as ODDS_PROVIDER, OddsAPIExhausted, TheOddsAPISource
+from .notify import format_api_status, format_record, format_stats, format_status, mask_key
 from .store import Store
 
 REFUSAL = "⛔ This bot is private."
@@ -33,7 +36,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🤖 Live Odds Bot online.\n"
         "I push 🟢 obvious edges and 🟡 value picks automatically.\n"
-        "Try /help, /opportunities, /stats, /record, /coverage.")
+        "Try /help, /opportunities, /stats, /status, /api status.")
 
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -48,6 +51,7 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/coverage — monitored markets + gaps\n"
         "/subscribe [obvious|value|all] — enable alerts\n"
         "/unsubscribe — disable push alerts\n"
+        "/api set <key> | status | clear — priority API key\n"
         "/settings — show your alert settings")
 
 
@@ -133,3 +137,47 @@ async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"⚙️ subscribed={bool(sub['subscribed'])} tiers={sub['tiers']} "
         f"quiet={sub['quiet_start'] or '—'}–{sub['quiet_end'] or '—'}")
+
+
+async def api(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manage the priority API key: /api set <key> | status | clear."""
+    store = await _gate(update, ctx)
+    if not store:
+        return
+    args = ctx.args or []
+    action = (args[0] if args else "status").lower()
+
+    if action == "set":
+        if len(args) < 2 or not args[1].strip():
+            await update.message.reply_text("Usage: /api set <your-key>")
+            return
+        key = args[1].strip()
+        try:
+            info = await asyncio.to_thread(TheOddsAPISource(key).validate)
+        except OddsAPIExhausted:
+            await update.message.reply_text(
+                "❌ That key is invalid or already exhausted. Not saved.")
+            return
+        except Exception:
+            await update.message.reply_text(
+                "❌ Could not validate the key right now (network issue). Not saved.")
+            return
+        store.set_api_key(ODDS_PROVIDER, key)
+        try:
+            await update.message.delete()
+        except Exception:
+            pass  # best effort: remove the key from chat history
+        await update.message.reply_text(
+            f"✅ API key {mask_key(key)} saved and validated "
+            f"({info.get('sports', '?')} sports available).\n"
+            f"It now has HIGHEST priority. I will notify you if it runs out.")
+        return
+
+    if action == "clear":
+        store.clear_api_key(ODDS_PROVIDER)
+        await update.message.reply_text(
+            "🗑 API key removed. Bot runs on free feeds.")
+        return
+
+    # default: status
+    await update.message.reply_text(format_api_status(store.get_api_key(ODDS_PROVIDER)))

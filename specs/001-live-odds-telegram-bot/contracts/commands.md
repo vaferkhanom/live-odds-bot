@@ -13,6 +13,7 @@
 | `/unsubscribe` | — | Disables push alerts; pull commands still work |
 | `/settings` | — | Shows tiers, quiet hours; sub-actions to change them |
 | `/status` | — | Live snapshot: open picks right now + today's settled won/lost tally |
+| `/api` | `set <key> \| status \| clear` | Priority API key: validated on set (key masked everywhere, set-message deleted); exhaustion triggers a one-time push alert and fallback to free feeds |
 | `/coverage` | — | Monitored market catalog per sport + declared gaps |
 
 Unauthorized chats receive a refusal message for every command.

@@ -103,3 +103,28 @@ def format_result(sel: dict) -> str:
         f"{sel['match_label']} — {sel['market_type']}: "
         f"{sel['outcome']} @ {sel['odds_decimal']}"
     )
+
+
+def mask_key(api_key: str) -> str:
+    """Last 4 chars visible, rest masked. Never expose full keys in chat/logs."""
+    if not api_key:
+        return "—"
+    return "…" + api_key[-4:] if len(api_key) > 4 else "…"
+
+
+def format_api_status(row: dict | None) -> str:
+    if not row:
+        return ("🔑 No API key set.\n"
+                "The bot runs on free feeds. To add priority data:\n"
+                "/api set <your-key>")
+    lines = [f"🔑 API key {mask_key(row['api_key'])} — status: {row['status']}"]
+    if row.get("quota_remaining") is not None:
+        lines.append(f"Quota remaining: {row['quota_remaining']} "
+                     f"(used {row.get('quota_used', 0)})")
+    else:
+        lines.append(f"Quota used this cycle-tracking: {row.get('quota_used', 0)}")
+    if row["status"] == "active":
+        lines.append("Priority: HIGHEST — key data is used first.")
+    else:
+        lines.append("Bot is on free feeds until a fresh key is set.")
+    return "\n".join(lines)

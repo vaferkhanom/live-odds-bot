@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS gaps (
     last_seen TEXT NOT NULL,
     PRIMARY KEY (sport, market_type)
 );
+CREATE TABLE IF NOT EXISTS api_keys (
+    provider TEXT PRIMARY KEY,
+    api_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    quota_used INTEGER NOT NULL DEFAULT 0,
+    quota_remaining INTEGER,
+    notified INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -166,6 +175,46 @@ class Store:
     def get_gaps(self) -> list[dict]:
         cur = self.conn.execute("SELECT * FROM gaps ORDER BY sport, market_type")
         return [dict(r) for r in cur.fetchall()]
+
+    # ---- API keys (user-supplied, highest-priority source) ----
+
+    def set_api_key(self, provider: str, api_key: str) -> None:
+        now = _now()
+        self.conn.execute(
+            "INSERT INTO api_keys (provider,api_key,status,quota_used,"
+            "quota_remaining,notified,updated_at) VALUES (?,?,'active',0,NULL,0,?) "
+            "ON CONFLICT(provider) DO UPDATE SET api_key=excluded.api_key, "
+            "status='active', quota_used=0, quota_remaining=NULL, notified=0, "
+            "updated_at=excluded.updated_at",
+            (provider, api_key, now),
+        )
+        self.conn.commit()
+
+    def get_api_key(self, provider: str) -> dict | None:
+        cur = self.conn.execute("SELECT * FROM api_keys WHERE provider=?", (provider,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def clear_api_key(self, provider: str) -> None:
+        self.conn.execute("DELETE FROM api_keys WHERE provider=?", (provider,))
+        self.conn.commit()
+
+    def update_api_quota(self, provider: str, used: int | None,
+                         remaining: int | None, status: str | None = None) -> None:
+        row = self.get_api_key(provider)
+        if not row:
+            return
+        self.conn.execute(
+            "UPDATE api_keys SET quota_used=COALESCE(?,quota_used), "
+            "quota_remaining=COALESCE(?,quota_remaining), "
+            "status=COALESCE(?,status), updated_at=? WHERE provider=?",
+            (used, remaining, status, _now(), provider),
+        )
+        self.conn.commit()
+
+    def mark_api_notified(self, provider: str) -> None:
+        self.conn.execute("UPDATE api_keys SET notified=1 WHERE provider=?", (provider,))
+        self.conn.commit()
 
     def _tehran_day(self, day: str | None) -> str:
         if day:
