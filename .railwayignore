@@ -1,0 +1,8 @@
+worker/node_modules/
+worker/.wrangler/
+worker/dist-test/
+.pytest_cache/
+__pycache__/
+data/
+.git/
+.opencode/
