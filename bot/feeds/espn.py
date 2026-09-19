@@ -74,16 +74,30 @@ class EspnSource(Source):
                 markets=markets,
                 raw_score="",
             ))
-        # Scoreboards often omit odds for live games; the per-event summary
-        # endpoint still carries book prices. Backfill live events only.
-        summaries = 0
+        # Scoreboards often omit odds; the per-event summary endpoint still
+        # carries book prices. Backfill live events first, then pre-match
+        # events starting within 36h (weekend fixtures). Capped per cycle.
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        pending = []
         for ev in events:
-            if ev.markets or not ev.is_live or summaries >= self.SUMMARY_CAP:
+            if ev.markets:
                 continue
+            if ev.is_live:
+                pending.insert(0, ev)
+                continue
+            try:
+                kickoff = datetime.fromisoformat(
+                    next(e for e in (data.get("events") or [])
+                         if str(e.get("id")) == ev.event_id).get("date", "").replace("Z", "+00:00"))
+                if kickoff - now < timedelta(hours=36):
+                    pending.append(ev)
+            except Exception:
+                continue
+        for ev in pending[:self.SUMMARY_CAP]:
             extra = self._summary_markets(path, ev.event_id)
             if extra:
                 ev.markets.extend(extra)
-                summaries += 1
         return events
 
     def _summary_markets(self, path: str, event_id: str) -> list[MarketPrice]:
