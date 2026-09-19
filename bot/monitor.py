@@ -114,7 +114,9 @@ async def run_cycle(store: Store, bot=None) -> dict:
     stats = {"evaluated": 0, "alerted": 0, "discarded": 0, "degraded": []}
     sources = cycle_sources(store)
     remaining = dict(CALL_BUDGET)
-    remaining.setdefault("oddsapi", 10)  # tight budget: key quota is precious
+    # Key quota is precious but the budget must cover every sport, else the
+    # last sport permanently reports degraded.
+    remaining.setdefault("oddsapi", len(catalog.all_sports()))
     sem = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
     jobs = []
     for sport in catalog.all_sports():
