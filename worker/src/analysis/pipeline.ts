@@ -8,6 +8,8 @@ import type { NewSelection } from "../store.ts";
 import { decimalToProb, devig, edge, expectedValue, kellyLite } from "./odds.ts";
 
 function bestPrice(events: LiveEvent[]): { best: number; volume: number } | null {
+  // Zero-volume quotes at exactly 2.00 are unpriced 50/50 placeholders
+  // (illiquid markets) and are ignored. Mirrors bot/analysis/pipeline.py.
   let best: number | null = null;
   let vol = 0;
   for (const ev of events) {
@@ -15,6 +17,7 @@ function bestPrice(events: LiveEvent[]): { best: number; volume: number } | null
       if (mk.outcomes.length === 0) continue;
       const o = mk.outcomes[0]!;
       if (o.decimalOdds && o.decimalOdds > 1) {
+        if (o.volume === 0 && o.decimalOdds === 2.0) continue;
         if (best === null || o.decimalOdds < best) best = o.decimalOdds;
         vol = Math.max(vol, o.volume);
       }

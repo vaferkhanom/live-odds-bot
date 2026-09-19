@@ -72,6 +72,10 @@ def same_match(a: LiveEvent, b: LiveEvent) -> bool:
 FETCH_TIMEOUT = 12
 MAX_CONCURRENT_FETCHES = 8
 
+# Hard bound on pushes per cycle: backstop against any future spam loop.
+# Capped picks are skipped entirely (not saved), so a later cycle retries.
+MAX_ALERTS_PER_CYCLE = 5
+
 
 async def _fetch_one(sem: asyncio.Semaphore, src: Source, sport: str,
                      store: Store | None = None):
@@ -168,6 +172,9 @@ async def run_cycle(store: Store, bot=None) -> dict:
             stats["evaluated"] += 1
             sel = pipeline.evaluate(ev, corroborating)
             if not sel:
+                stats["discarded"] += 1
+                continue
+            if stats["alerted"] >= MAX_ALERTS_PER_CYCLE:
                 stats["discarded"] += 1
                 continue
             sel_id = store.save_selection(sel)

@@ -76,4 +76,9 @@ describe("pipeline", () => {
   it("discards markets below the value floor", () => {
     assert.equal(evaluate(primary(0.5), [corroborating(2.0, 500)], cfg), null);
   });
+
+  it("ignores zero-volume exactly-2.00 placeholder prices", () => {
+    const phantom = corroborating(2.0, 0);
+    assert.equal(evaluate(primary(0.7), [phantom], cfg), null);
+  });
 });

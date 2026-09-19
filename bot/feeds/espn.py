@@ -51,12 +51,15 @@ class EspnSource(Source):
             return []
         events: list[LiveEvent] = []
         for ev in (data.get("events") or []):
+            state = (ev.get("status", {}).get("type", {}) or {}).get("state", "")
+            if state == "post":
+                continue  # finished games must never be evaluated;
+                # stale odds + instant settlement = bogus picks + spam loop
             comps = ev.get("competitions") or [{}]
             comp = comps[0]
             competitors = comp.get("competitors") or []
             names = [c.get("team", {}).get("displayName", "?") for c in competitors]
             label = " vs ".join(names) if names else ev.get("name", "?")
-            state = (ev.get("status", {}).get("type", {}) or {}).get("state", "")
             markets: list[MarketPrice] = []
             for odds in comp.get("odds") or []:
                 try:

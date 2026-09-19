@@ -23,6 +23,12 @@ const CALL_BUDGET: Record<string, number> = { espn: 40, polymarket: 20, kalshi: 
 
 const MAX_CONCURRENT_FETCHES = 8;
 
+/**
+ * Hard bound on pushes per cycle: backstop against any future spam loop.
+ * Capped picks are skipped entirely (not saved), so a later cycle retries.
+ */
+const MAX_ALERTS_PER_CYCLE = 5;
+
 export const STOPWORDS = new Set(
   "vs v the fc cf sc ac united city real club de la le les at of and".split(" "),
 );
@@ -156,6 +162,10 @@ export async function runCycle(
       stats.evaluated++;
       const sel = evaluate(ev, corroborating, cfg);
       if (!sel) {
+        stats.discarded++;
+        continue;
+      }
+      if (stats.alerted >= MAX_ALERTS_PER_CYCLE) {
         stats.discarded++;
         continue;
       }

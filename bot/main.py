@@ -23,6 +23,9 @@ async def _post_init(app) -> None:
     store: Store = app.bot_data["store"]
     for chat_id in config.AUTHORIZED_CHAT_IDS:
         store.ensure_subscription(chat_id)
+    repaired = store.repair_instant_settlements()
+    if repaired:
+        log.info("repaired %d bogus instant-settlements (voided)", repaired)
     app.create_task(monitor_forever(store, app.bot))
     log.info("heartbeat: bot started, monitor scheduled")
 

@@ -96,6 +96,9 @@ export class EspnSource implements Source {
     }
     const events: LiveEvent[] = [];
     for (const ev of data.events ?? []) {
+      // Finished games must never be evaluated (stale odds + instant
+      // settlement = bogus picks + spam loop). Mirrors bot/feeds/espn.py.
+      if (ev.status?.type?.state === "post") continue;
       const comp = (ev.competitions ?? [{}])[0]!;
       const competitors = comp.competitors ?? [];
       const names = competitors.map((c) => c.team?.displayName ?? "?");

@@ -9,7 +9,12 @@ from . import odds as O
 
 
 def _best_price(events: list[LiveEvent]) -> tuple[float, float] | None:
-    """Best (lowest decimal) price and max volume across sources for outcome 0."""
+    """Best (lowest decimal) price and max volume across sources for outcome 0.
+
+    Zero-volume quotes priced at exactly 2.00 are unpriced 50/50
+    placeholders (illiquid markets) and are ignored, so they can never
+    manufacture a phantom edge.
+    """
     best, vol = None, 0.0
     for ev in events:
         for mk in ev.markets:
@@ -17,6 +22,8 @@ def _best_price(events: list[LiveEvent]) -> tuple[float, float] | None:
                 continue
             o = mk.outcomes[0]
             if o.decimal_odds and o.decimal_odds > 1:
+                if o.volume == 0 and o.decimal_odds == 2.0:
+                    continue
                 if best is None or o.decimal_odds < best:
                     best = o.decimal_odds
                 vol = max(vol, o.volume)

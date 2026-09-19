@@ -239,3 +239,29 @@ class Store:
             "SELECT tier, status, COUNT(*) c FROM selections GROUP BY tier, status")
         return [{"tier": r["tier"], "status": r["status"], "count": r["c"]}
                 for r in cur.fetchall()]
+
+    def repair_instant_settlements(self, max_seconds: int = 120) -> int:
+        """Void picks settled impossibly fast after detection.
+
+        A real game cannot finish seconds after we spot it; such rows are
+        bogus instant-settlements (stale odds evaluated on finished games)
+        and must not pollute the track record. Returns voided count.
+        """
+        from datetime import datetime as _dt
+        cur = self.conn.execute(
+            "SELECT id, detected_at, settled_at FROM selections "
+            "WHERE status IN ('won','lost') AND settled_at IS NOT NULL")
+        voided = 0
+        for row in cur.fetchall():
+            try:
+                detected = _dt.fromisoformat(row["detected_at"])
+                settled = _dt.fromisoformat(row["settled_at"])
+                if (settled - detected).total_seconds() < max_seconds:
+                    self.conn.execute(
+                        "UPDATE selections SET status='void' WHERE id=?", (row["id"],))
+                    voided += 1
+            except (TypeError, ValueError):
+                continue
+        if voided:
+            self.conn.commit()
+        return voided
