@@ -6,19 +6,26 @@ from .http import get_json
 
 GAMMA = "https://gamma-api.polymarket.com"
 
-# sport key -> keyword filter used against event titles/series
+# bot sport key -> Polymarket series id (verified 2026-09-18). None = no
+# dedicated series: fall back to keyword-filtered global fetch.
+SERIES = {
+    "soccer-epl": "10188",
+    "soccer-laliga": "10193",
+    "soccer-bundesliga": "10194",
+    "soccer-seriea": "10203",
+    "soccer-ligue1": "10195",
+    "soccer-ucl": None,
+    "nba": "10345",
+    "nfl": "12185",
+    "mlb": "3",
+    "nhl": "10346",
+    "tennis-atp": None,
+}
+
+# Fallback keywords, used only when a sport has no series id.
 SPORT_KEYWORDS = {
-    "soccer-epl": ["premier league", "epl"],
-    "soccer-laliga": ["la liga", "laliga"],
-    "soccer-bundesliga": ["bundesliga"],
-    "soccer-seriea": ["serie a"],
-    "soccer-ligue1": ["ligue 1"],
     "soccer-ucl": ["champions league"],
-    "nba": ["nba"],
-    "nfl": ["nfl"],
-    "mlb": ["mlb"],
-    "nhl": ["nhl"],
-    "tennis-atp": ["atp", "tennis"],
+    "tennis-atp": ["atp"],
 }
 
 
@@ -26,16 +33,23 @@ class PolymarketSource(Source):
     name = "polymarket"
 
     def fetch_live(self, sport: str) -> list[LiveEvent]:
-        # No keyword prefilter: sports liquidity moves across series/titles.
-        # Matching to fixtures happens in monitor.py via team-token overlap.
+        series = SERIES.get(sport)
         try:
-            data = get_json(f"{GAMMA}/events",
-                            params={"closed": "false", "limit": 150})
+            if series:
+                data = get_json(f"{GAMMA}/events",
+                                params={"series_id": series, "closed": "false",
+                                        "limit": 100})
+            else:
+                data = get_json(f"{GAMMA}/events",
+                                params={"closed": "false", "limit": 150})
         except Exception:
             return []
+        keywords = [] if series else SPORT_KEYWORDS.get(sport, [])
         events: list[LiveEvent] = []
         for ev in data or []:
             title = ev.get("title") or ""
+            if keywords and not any(k in title.lower() for k in keywords):
+                continue
             markets: list[MarketPrice] = []
             for m in ev.get("markets") or []:
                 try:
