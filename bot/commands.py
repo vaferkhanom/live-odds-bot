@@ -67,8 +67,9 @@ async def opportunities(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     lines = []
     for sel in open_picks:
         badge = TIER_EMOJI.get(sel["tier"], "⚪")
+        side = sel.get("outcome_label") or sel["outcome"]
         lines.append(f"{badge} {sel['match_label']} — {sel['market_type']}: "
-                     f"{sel['outcome']} @ {sel['odds_decimal']}")
+                     f"{side} @ {sel['odds_decimal']}")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -104,6 +105,9 @@ async def coverage(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["🗂 Monitored markets:"]
     for sport in catalog.all_sports():
         lines.append(f"• {sport}: {', '.join(catalog.monitored_markets(sport)) or '—'}")
+        off = catalog.unmonitored_markets(sport)
+        if off:
+            lines.append(f"  ✖ not covered: {', '.join(off)}")
     gaps = store.get_gaps()
     if gaps:
         lines.append("\n⚠️ Coverage gaps (never alerted):")

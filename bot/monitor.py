@@ -69,12 +69,31 @@ def same_match(a: LiveEvent, b: LiveEvent) -> bool:
     return (len(la) > 8 and la in lb) or (len(lb) > 8 and lb in la)
 
 
+def is_stale(ev: LiveEvent, max_age_hours: float = 6.0) -> bool:
+    """True when a non-live event started too long ago to trust.
+
+    Yesterday's games lingering in feeds must never produce alerts.
+    Events without a known start time are never judged stale here.
+    """
+    if ev.is_live or not ev.starts_at:
+        return False
+    try:
+        from datetime import datetime, timedelta, timezone
+        kickoff = datetime.fromisoformat(str(ev.starts_at).replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) - kickoff > timedelta(hours=max_age_hours)
+    except Exception:
+        return False
+
+
 FETCH_TIMEOUT = 12
 MAX_CONCURRENT_FETCHES = 8
 
 # Hard bound on pushes per cycle: backstop against any future spam loop.
 # Capped picks are skipped entirely (not saved), so a later cycle retries.
 MAX_ALERTS_PER_CYCLE = 5
+
+# Per-sport fairness cap: no single sport may dominate a cycle's alerts.
+MAX_ALERTS_PER_SPORT = 2
 
 
 async def _fetch_one(sem: asyncio.Semaphore, src: Source, sport: str,
@@ -112,6 +131,7 @@ def cycle_sources(store: Store) -> list[Source]:
 async def run_cycle(store: Store, bot=None) -> dict:
     """One monitor pass over all catalog sports. Returns cycle stats."""
     stats = {"evaluated": 0, "alerted": 0, "discarded": 0, "degraded": []}
+    sport_alerts: dict[str, int] = {}
     sources = cycle_sources(store)
     remaining = dict(CALL_BUDGET)
     # Key quota is precious but the budget must cover every sport, else the
@@ -138,6 +158,8 @@ async def run_cycle(store: Store, bot=None) -> dict:
         for src in sources:
             for ev in per_source.get(src.name, []):
                 if not ev.markets:
+                    continue
+                if is_stale(ev):
                     continue
                 ev.source_name = src.name
                 pool.append(ev)
@@ -167,25 +189,33 @@ async def run_cycle(store: Store, bot=None) -> dict:
                     ev = by_source[preferred]
                     break
             corroborating = [e for e in members if e is not ev]
-            if not catalog.is_monitored(ev.sport, ev.markets[0].market_type):
-                store.upsert_gap(ev.sport, ev.markets[0].market_type,
-                                 "not-in-catalog")
+            monitored = [m for m in ev.markets
+                         if catalog.is_monitored(ev.sport, m.market_type)]
+            for m in ev.markets:
+                if not catalog.is_monitored(ev.sport, m.market_type):
+                    store.upsert_gap(ev.sport, m.market_type, "not-in-catalog")
+            if not monitored:
                 continue
             stats["evaluated"] += 1
-            sel = pipeline.evaluate(ev, corroborating)
-            if not sel:
+            sels = pipeline.evaluate_all(ev, corroborating, config)
+            if not sels:
                 stats["discarded"] += 1
                 continue
-            if stats["alerted"] >= MAX_ALERTS_PER_CYCLE:
-                stats["discarded"] += 1
-                continue
-            sel_id = store.save_selection(sel)
-            if not sel_id:
-                continue  # duplicate open selection
-            sel["id"] = sel_id
-            stats["alerted"] += 1
-            if bot is not None:
-                await dispatch(store, bot, sel)
+            for sel in sels:
+                if stats["alerted"] >= MAX_ALERTS_PER_CYCLE:
+                    stats["discarded"] += 1
+                    continue
+                if sport_alerts.get(ev.sport, 0) >= MAX_ALERTS_PER_SPORT:
+                    stats["discarded"] += 1
+                    continue
+                sel_id = store.save_selection(sel)
+                if not sel_id:
+                    continue  # duplicate open selection
+                sel["id"] = sel_id
+                stats["alerted"] += 1
+                sport_alerts[ev.sport] = sport_alerts.get(ev.sport, 0) + 1
+                if bot is not None:
+                    await dispatch(store, bot, sel)
     if bot is not None:
         stats["settled"] = await settle_open(store, bot)
     else:
@@ -217,6 +247,18 @@ async def check_api_exhaustion(store: Store, bot=None) -> bool:
     return sent_any
 
 
+def _match_final(match_label: str, finals: dict) -> dict | None:
+    """Fuzzy-match a pick's fixture to a final score by label."""
+    from .feeds.base import LiveEvent as _LE
+    probe = _LE(event_id="", sport="", match_label=match_label, is_live=False)
+    for final in finals.values():
+        label = final.get("label") or ""
+        if label and same_match(probe, _LE(event_id="", sport="",
+                                           match_label=label, is_live=False)):
+            return final
+    return None
+
+
 async def settle_open(store: Store, bot=None) -> int:
     """Settle open picks from one batched ESPN finals pass.
 
@@ -235,7 +277,11 @@ async def settle_open(store: Store, bot=None) -> int:
     for sel in store.get_open():
         final = finals.get(str(sel["event_id"]))
         if final is None:
-            continue
+            # Cross-source pick (prediction-market event id): settle by
+            # fuzzy fixture match so stale picks never linger as open.
+            final = _match_final(sel["match_label"], finals)
+            if final is None:
+                continue
         outcome = settle(sel, final)
         if outcome in ("won", "lost", "void"):
             store.settle(sel["id"], outcome)

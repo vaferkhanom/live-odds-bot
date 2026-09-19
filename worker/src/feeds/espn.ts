@@ -33,6 +33,7 @@ interface EspnScoreboard {
 interface EspnEvent {
   id?: string | number;
   name?: string;
+  date?: string;
   status?: { type?: { state?: string } };
   competitions?: EspnCompetition[];
 }
@@ -82,9 +83,91 @@ function parseMarket(odds: EspnOdds): MarketPrice | null {
   return { marketType, line, outcomes };
 }
 
+const SUMMARY_CAP = 15;
+
+interface EspnSummaryOdds {
+  overUnder?: number;
+  spread?: number | string;
+  overOdds?: number | string;
+  underOdds?: number | string;
+  homeTeamOdds?: Record<string, unknown>;
+  awayTeamOdds?: Record<string, unknown>;
+  drawOdds?: Record<string, unknown>;
+}
+
+interface EspnSummary {
+  pickcenter?: EspnSummaryOdds[];
+  odds?: EspnSummaryOdds[];
+}
+
+function parseSummaryOdds(odds: EspnSummaryOdds): MarketPrice[] {
+  const found: MarketPrice[] = [];
+  const outcomes: OutcomePrice[] = [];
+  const homeML = explicitMoneyLine(odds.homeTeamOdds);
+  const awayML = explicitMoneyLine(odds.awayTeamOdds);
+  const drawML = explicitMoneyLine(odds.drawOdds);
+  if (homeML !== null) outcomes.push({ name: "home", decimalOdds: americanToDecimal(homeML), volume: 0 });
+  if (awayML !== null) outcomes.push({ name: "away", decimalOdds: americanToDecimal(awayML), volume: 0 });
+  if (drawML !== null) outcomes.push({ name: "draw", decimalOdds: americanToDecimal(drawML), volume: 0 });
+  if (outcomes.length >= 2) {
+    found.push({
+      marketType: drawML !== null ? "1x2" : "moneyline",
+      line: null,
+      outcomes,
+    });
+  }
+  const ou = odds.overUnder;
+  const over = odds.overOdds !== undefined && odds.overOdds !== null && odds.overOdds !== "" ? Number(odds.overOdds) : null;
+  const under = odds.underOdds !== undefined && odds.underOdds !== null && odds.underOdds !== "" ? Number(odds.underOdds) : null;
+  if (ou !== undefined && ou !== null && over !== null && under !== null && Number.isFinite(over) && Number.isFinite(under)) {
+    found.push({
+      marketType: "total",
+      line: String(ou),
+      outcomes: [
+        { name: "over", decimalOdds: americanToDecimal(over), volume: 0 },
+        { name: "under", decimalOdds: americanToDecimal(under), volume: 0 },
+      ],
+    });
+  }
+  const spread = odds.spread;
+  const homeSpread = spreadValue(odds.homeTeamOdds);
+  const awaySpread = spreadValue(odds.awayTeamOdds);
+  if (spread !== undefined && spread !== null && homeSpread !== null && awaySpread !== null) {
+    found.push({
+      marketType: "handicap",
+      line: String(spread),
+      outcomes: [
+        { name: "home", decimalOdds: americanToDecimal(homeSpread), volume: 0 },
+        { name: "away", decimalOdds: americanToDecimal(awaySpread), volume: 0 },
+      ],
+    });
+  }
+  return found;
+}
+
+function explicitMoneyLine(node: unknown): number | null {
+  if (!node || typeof node !== "object") return null;
+  const rec = node as Record<string, unknown>;
+  for (const key of ["moneyLine", "moneyline"]) {
+    const v = rec[key];
+    if (v !== undefined && v !== null && v !== "") {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
+}
+
+function spreadValue(node: unknown): number | null {
+  if (!node || typeof node !== "object") return null;
+  const v = (node as Record<string, unknown>)["spreadOdds"];
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export class EspnSource implements Source {
   readonly name = "espn";
-
   async fetchLive(sport: string, http: Http): Promise<LiveEvent[]> {
     const path = SPORT_PATHS[sport];
     if (!path) return [];
@@ -120,9 +203,55 @@ export class EspnSource implements Source {
         isLive: state === "in",
         markets,
         rawScore: "",
+        startsAt: ev.date ?? null,
       });
     }
+    // Scoreboards often omit odds; the per-event summary endpoint still
+    // carries book prices. Backfill live events first, then pre-match
+    // events starting within the next 36h. Games that started more than
+    // 3h ago are stale (played yesterday) and are never backfilled.
+    const now = Date.now();
+    const pending: LiveEvent[] = [];
+    const upcoming: LiveEvent[] = [];
+    for (const ev of events) {
+      if (ev.markets.length > 0) continue;
+      if (ev.isLive) {
+        pending.unshift(ev);
+        continue;
+      }
+      const raw = data.events?.find((e) => String(e.id ?? "") === ev.eventId)?.date;
+      if (!raw) continue;
+      const kickoff = Date.parse(raw);
+      if (!Number.isFinite(kickoff)) continue;
+      const deltaH = (kickoff - now) / 3_600_000;
+      if (deltaH >= -3 && deltaH <= 36) upcoming.push(ev);
+    }
+    const targets = [...pending, ...upcoming].slice(0, SUMMARY_CAP);
+    await Promise.all(
+      targets.map(async (ev) => {
+        const extra = await this.summaryMarkets(path, ev.eventId, http);
+        if (extra.length > 0) ev.markets.push(...extra);
+      }),
+    );
     return events;
+  }
+
+  async summaryMarkets(path: string, eventId: string, http: Http): Promise<MarketPrice[]> {
+    let data: EspnSummary;
+    try {
+      data = await http.getJson<EspnSummary>(`${BASE}/${path}/summary`, { event: eventId }, ESPN_UA);
+    } catch {
+      return [];
+    }
+    const out: MarketPrice[] = [];
+    for (const odd of data.pickcenter ?? data.odds ?? []) {
+      try {
+        out.push(...parseSummaryOdds(odd));
+      } catch {
+        continue;
+      }
+    }
+    return out;
   }
 
   async fetchFinals(http: Http): Promise<FinalsMap> {
@@ -143,7 +272,13 @@ export class EspnSource implements Source {
             if (c.homeAway) paired[c.homeAway] = parseInt(c.score ?? "", 10);
           }
           if (Number.isFinite(paired["home"]) && Number.isFinite(paired["away"])) {
-            finals[String(ev.id)] = { home: paired["home"]!, away: paired["away"]! };
+            const competitors = comp.competitors ?? [];
+            const names = competitors.map((c) => c.team?.displayName ?? "?");
+            finals[String(ev.id)] = {
+              home: paired["home"]!,
+              away: paired["away"]!,
+              label: names.length > 0 ? names.join(" vs ") : (ev.name ?? "?"),
+            };
           }
         } catch {
           continue;

@@ -66,7 +66,7 @@ export async function handleOpportunities(ctx: CommandContext): Promise<void> {
   const badge = (t: string) => (t === "obvious" ? "🟢" : t === "value" ? "🟡" : "⚪");
   await ctx.tg.sendMessage(
     ctx.chatId,
-    open.map((s) => `${badge(s.tier)} ${s.match_label} — ${s.market_type}: ${s.outcome} @ ${s.odds_decimal}`).join("\n"),
+    open.map((s) => `${badge(s.tier)} ${s.match_label} — ${s.market_type}: ${s.outcome_label || s.outcome} @ ${s.odds_decimal}`).join("\n"),
   );
 }
 

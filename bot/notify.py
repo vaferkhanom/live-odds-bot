@@ -10,6 +10,10 @@ TIER_EMOJI = {"obvious": "🟢", "value": "🟡"}
 OUTCOME_EMOJI = {"won": "✅", "lost": "❌", "void": "➖", "pending": "⏳", "open": "🔵"}
 
 
+def _side(sel: dict) -> str:
+    return sel.get("outcome_label") or sel["outcome"]
+
+
 def format_alert(sel: dict) -> str:
     badge = TIER_EMOJI.get(sel["tier"], "⚪")
     tier_name = "OBVIOUS EDGE" if sel["tier"] == "obvious" else "VALUE PICK"
@@ -17,7 +21,7 @@ def format_alert(sel: dict) -> str:
     return (
         f"{badge} {tier_name} — {sel['sport']}\n"
         f"{sel['match_label']} — {sel['market_type']}{line}: "
-        f"{sel['outcome']} @ {sel['odds_decimal']}\n"
+        f"{_side(sel)} @ {sel['odds_decimal']}\n"
         f"Edge {sel['edge']:.1%} · EV {sel['ev']:+.2f}u · Cap {sel['stake_cap']}u\n"
         f"Thesis: {sel['thesis']}\n"
         f"Invalid if: {sel['invalidation']}"
@@ -58,7 +62,7 @@ def format_stats(report: dict) -> str:
         badge = TIER_EMOJI.get(sel["tier"], "⚪")
         lines.append(
             f"{emo} {badge} {sel['match_label']} — {sel['market_type']}: "
-            f"{sel['outcome']} @ {sel['odds_decimal']} ({sel['status']})")
+            f"{_side(sel)} @ {sel['odds_decimal']} ({sel['status']})")
     c = report["counts"]
     lines.append(
         f"\nTally: ✅ {c.get('won', 0)} · ❌ {c.get('lost', 0)} · "
@@ -101,7 +105,7 @@ def format_result(sel: dict) -> str:
     return (
         f"{emo} {badge}\n"
         f"{sel['match_label']} — {sel['market_type']}: "
-        f"{sel['outcome']} @ {sel['odds_decimal']}"
+        f"{_side(sel)} @ {sel['odds_decimal']}"
     )
 
 

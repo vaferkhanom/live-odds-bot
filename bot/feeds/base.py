@@ -26,6 +26,9 @@ class LiveEvent:
     is_live: bool
     markets: list[MarketPrice] = field(default_factory=list)
     raw_score: str = ""
+    # ISO kickoff/start time when the source provides it. Used to drop
+    # stale (already-played) fixtures that would otherwise alert on old odds.
+    starts_at: str | None = None
 
 
 class Source:

@@ -16,6 +16,7 @@ export interface SelectionLike {
   market_type: string;
   line: string | null;
   outcome: string;
+  outcome_label?: string | null;
   odds_decimal: number;
   tier: string;
   edge: number;
@@ -26,13 +27,17 @@ export interface SelectionLike {
   status: string;
 }
 
+function side(sel: SelectionLike): string {
+  return sel.outcome_label || sel.outcome;
+}
+
 export function formatAlert(sel: SelectionLike): string {
   const badge = TIER_EMOJI[sel.tier] ?? "⚪";
   const tierName = sel.tier === "obvious" ? "OBVIOUS EDGE" : "VALUE PICK";
   const line = sel.line ? ` — Line ${sel.line}` : "";
   return (
     `${badge} ${tierName} — ${sel.sport}\n` +
-    `${sel.match_label} — ${sel.market_type}${line}: ${sel.outcome} @ ${sel.odds_decimal}\n` +
+    `${sel.match_label} — ${sel.market_type}${line}: ${side(sel)} @ ${sel.odds_decimal}\n` +
     `Edge ${(sel.edge * 100).toFixed(1)}% · EV ${sel.ev >= 0 ? "+" : ""}${sel.ev.toFixed(2)}u · Cap ${sel.stake_cap}u\n` +
     `Thesis: ${sel.thesis}\n` +
     `Invalid if: ${sel.invalidation}`
@@ -66,7 +71,7 @@ export function formatStats(report: StatsReport): string {
     const emo = OUTCOME_EMOJI[sel.status] ?? "❔";
     const badge = TIER_EMOJI[sel.tier] ?? "⚪";
     lines.push(
-      `${emo} ${badge} ${sel.match_label} — ${sel.market_type}: ${sel.outcome} @ ${sel.odds_decimal} (${sel.status})`,
+      `${emo} ${badge} ${sel.match_label} — ${sel.market_type}: ${side(sel)} @ ${sel.odds_decimal} (${sel.status})`,
     );
   }
   const c = report.counts;

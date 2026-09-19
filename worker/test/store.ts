@@ -12,7 +12,14 @@ import { Store } from "../src/store.ts";
  */
 function makeD1() {
   const db = new DatabaseSync(":memory:");
-  const schema = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0001_init.sql"), "utf8");
+  const migDir = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
+  const schema = readFileSync(join(migDir, "0001_init.sql"), "utf8");
+  db.exec(schema);
+  try {
+    db.exec(readFileSync(join(migDir, "0002_outcome_label.sql"), "utf8"));
+  } catch {
+    /* already applied */
+  }
   db.exec(schema);
   const exec = (stmt: any, params: unknown[]) => ({
     first: <T>() => (stmt.get(...params) ?? null) as T | null,
@@ -37,6 +44,7 @@ function selection(over: Record<string, unknown> = {}) {
     market_type: "moneyline",
     line: null,
     outcome: "home",
+    outcome_label: "Win for A",
     odds_decimal: 2.0,
     tier: "obvious",
     edge: 0.07,

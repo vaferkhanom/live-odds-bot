@@ -3,9 +3,39 @@
  * corroborate -> de-vig -> tier -> thesis. Same thresholds, same rules.
  */
 import type { Settings } from "../config.ts";
-import type { LiveEvent } from "../feeds/base.ts";
+import type { LiveEvent, MarketPrice } from "../feeds/base.ts";
 import type { NewSelection } from "../store.ts";
 import { decimalToProb, devig, edge, expectedValue, kellyLite } from "./odds.ts";
+
+/** Market families comparable across sources. Winner markets compare by
+ * position (outcome[0] = home side); all other types require the same line. */
+const WINNER_FAMILY = new Set(["moneyline", "1x2"]);
+
+export function compatible(primaryType: string, primaryLine: string | null, otherType: string, otherLine: string | null): boolean {
+  if (WINNER_FAMILY.has(primaryType) && WINNER_FAMILY.has(otherType)) return true;
+  return primaryType === otherType && (primaryLine ?? null) === (otherLine ?? null);
+}
+
+function matchingEvents(coroborating: LiveEvent[], marketType: string, line: string | null): LiveEvent[] {
+  const out: LiveEvent[] = [];
+  for (const ev of coroborating) {
+    const mkts = ev.markets.filter((m) => compatible(marketType, line, m.marketType, m.line));
+    if (mkts.length > 0) out.push({ ...ev, markets: mkts });
+  }
+  return out;
+}
+
+export function outcomeLabel(marketType: string, outcome: string, matchLabel: string): string {
+  const teams = matchLabel.split(" vs ").map((t) => t.trim().replace(/\.+$/, ""));
+  if ((marketType === "moneyline" || marketType === "1x2") && teams.length === 2) {
+    if (outcome === "home") return `Win for ${teams[0]}`;
+    if (outcome === "away") return `Win for ${teams[1]}`;
+    if (outcome === "draw") return "Draw";
+    if (outcome === "yes") return `Yes — ${teams[0]} win`;
+    if (outcome === "no") return `No — ${teams[0]} win`;
+  }
+  return outcome;
+}
 
 function bestPrice(events: LiveEvent[]): { best: number; volume: number } | null {
   // Zero-volume quotes at exactly 2.00 are unpriced 50/50 placeholders
@@ -32,8 +62,33 @@ export function evaluate(
   cfg: Settings,
   enrichment = "",
 ): NewSelection | null {
-  if (event.markets.length === 0) return null;
-  const market = event.markets[0]!;
+  const sels = evaluateAll(event, corroborating, cfg, enrichment);
+  return sels.length > 0 ? sels[0]! : null;
+}
+
+export function evaluateAll(
+  event: LiveEvent,
+  corroborating: LiveEvent[],
+  cfg: Settings,
+  enrichment = "",
+): NewSelection[] {
+  if (event.markets.length === 0) return [];
+  const out: NewSelection[] = [];
+  for (const market of event.markets) {
+    const matched = matchingEvents(corroborating, market.marketType, market.line);
+    const sel = evaluateMarket(event, market, matched, cfg, enrichment);
+    if (sel) out.push(sel);
+  }
+  return out;
+}
+
+function evaluateMarket(
+  event: LiveEvent,
+  market: MarketPrice,
+  corroborating: LiveEvent[],
+  cfg: Settings,
+  enrichment = "",
+): NewSelection | null {
   if (market.outcomes.length < 2) return null;
   const quotes = market.outcomes.filter((o) => o.decimalOdds > 1).map((o) => o.decimalOdds);
   if (quotes.length < 2) return null;
@@ -52,8 +107,7 @@ export function evaluate(
   const ev = expectedValue(fairProb, others.best);
   const stake = kellyLite(fairProb, others.best, cap);
 
-  const outcome = market.outcomes[idx]!.name;
-  const thesisBits = [
+  const outcome = market.outcomes[idx]!.name;  const thesisBits = [
     `Fair ${(fairProb * 100).toFixed(1)}% vs market ${(decimalToProb(others.best) * 100).toFixed(1)}%`,
     `corroborated by ${corroborating.length + 1} sources`,
   ];
@@ -70,6 +124,7 @@ export function evaluate(
     market_type: market.marketType,
     line: market.line,
     outcome,
+    outcome_label: outcomeLabel(market.marketType, outcome, event.matchLabel),
     odds_decimal: Math.round(others.best * 100) / 100,
     tier,
     edge: Math.round(ed * 10000) / 10000,

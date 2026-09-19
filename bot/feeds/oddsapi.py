@@ -83,7 +83,8 @@ class TheOddsAPISource(Source):
             return []
         try:
             data = self._get(f"/sports/{key}/odds",
-                             {"regions": "us", "markets": "h2h", "oddsFormat": "decimal"})
+                             {"regions": "us,uk", "markets": "h2h,spreads,totals",
+                              "oddsFormat": "decimal"})
         except OddsAPIExhausted:
             raise
         except Exception:
@@ -91,32 +92,67 @@ class TheOddsAPISource(Source):
         events: list[LiveEvent] = []
         for ev in data or []:
             try:
-                books = ev.get("bookmakers") or []
-                by_outcome: dict[str, list[float]] = {}
-                for book in books:
-                    for market in book.get("markets") or []:
-                        if market.get("key") != "h2h":
-                            continue
-                        for outcome in market.get("outcomes") or []:
-                            price = float(outcome.get("price") or 0)
-                            if price > 1:
-                                by_outcome.setdefault(str(outcome.get("name")), []).append(price)
-                if len(by_outcome) < 2:
-                    continue
                 home, away = ev.get("home_team", ""), ev.get("away_team", "")
-                outcomes = []
-                for name, prices in by_outcome.items():
-                    side = "home" if name == home else "away" if name == away else "draw"
-                    outcomes.append(OutcomePrice(name=side, decimal_odds=median(prices)))
-                if len(outcomes) < 2:
+                books = ev.get("bookmakers") or []
+                markets = self._parse_books(books, home, away)
+                if not markets:
                     continue
                 events.append(LiveEvent(
                     event_id=f"oddsapi-{ev.get('id')}",
                     sport=sport,
                     match_label=f"{home} vs {away}",
                     is_live=True,
-                    markets=[MarketPrice(market_type="moneyline", line=None, outcomes=outcomes)],
+                    markets=markets,
                 ))
             except Exception:
                 continue
         return events
+
+    @staticmethod
+    def _parse_books(books: list, home: str, away: str) -> list[MarketPrice]:
+        """Median-across-books prices per market: h2h, spreads, totals.
+
+        Spread/total legs carry opposite points per side (-1.5/+1.5), so
+        sides group by market key and the line is taken from the
+        home/over side (first side otherwise).
+        """
+        by_market: dict[str, dict[str, list[float]]] = {}
+        side_point: dict[tuple, str] = {}
+        for book in books:
+            for market in book.get("markets") or []:
+                mkey = market.get("key")
+                if mkey not in ("h2h", "spreads", "totals"):
+                    continue
+                for outcome in market.get("outcomes") or []:
+                    try:
+                        price = float(outcome.get("price") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if price <= 1:
+                        continue
+                    name = str(outcome.get("name"))
+                    if mkey == "h2h":
+                        side = "home" if name == home else "away" if name == away else "draw"
+                    elif mkey == "spreads":
+                        side = "home" if name == home else "away" if name == away else name
+                    else:
+                        side = name.lower()  # Over/Under
+                    by_market.setdefault(mkey, {}).setdefault(side, []).append(price)
+                    point = outcome.get("point")
+                    if point is not None and (mkey, side) not in side_point:
+                        side_point[(mkey, side)] = str(point)
+        out: list[MarketPrice] = []
+        for mkey, sides in by_market.items():
+            if len(sides) < 2:
+                continue
+            mtype = {"h2h": "moneyline", "spreads": "handicap", "totals": "total"}[mkey]
+            if mkey == "h2h":
+                line = None
+            else:
+                first_side = "home" if "home" in sides else "over" if "over" in sides else sorted(sides)[0]
+                line = side_point.get((mkey, first_side))
+            out.append(MarketPrice(
+                market_type=mtype, line=line,
+                outcomes=[OutcomePrice(name=s, decimal_odds=median(p)) for s, p in sides.items()],
+            ))
+        return out

@@ -11,6 +11,7 @@ soccer-epl:
   btts: true
   cards-total: false
   corners-total: false
+  player-props: false
 soccer-laliga:
   1x2: true
   double-chance: true
@@ -22,6 +23,7 @@ soccer-laliga:
   btts: true
   cards-total: false
   corners-total: false
+  player-props: false
 soccer-bundesliga:
   1x2: true
   total: true
@@ -29,6 +31,7 @@ soccer-bundesliga:
   btts: true
   cards-total: false
   corners-total: false
+  player-props: false
 soccer-seriea:
   1x2: true
   total: true
@@ -36,6 +39,7 @@ soccer-seriea:
   btts: true
   cards-total: false
   corners-total: false
+  player-props: false
 soccer-ligue1:
   1x2: true
   total: true
@@ -43,6 +47,7 @@ soccer-ligue1:
   btts: true
   cards-total: false
   corners-total: false
+  player-props: false
 soccer-ucl:
   1x2: true
   total: true
@@ -50,26 +55,32 @@ soccer-ucl:
   btts: true
   cards-total: false
   corners-total: false
+  player-props: false
 nba:
   moneyline: true
   spread: true
   total: true
   1st-half-spread: true
   1st-half-total: true
+  player-props: false
 nfl:
   moneyline: true
   spread: true
   total: true
   1st-half-spread: true
+  player-props: false
 mlb:
   moneyline: true
   run-line: true
   total: true
+  player-props: false
 nhl:
   moneyline: true
   puck-line: true
   total: true
+  player-props: false
 tennis-atp:
   moneyline: true
   set-handicap: true
   total-games: true
+  player-props: false

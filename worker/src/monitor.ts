@@ -10,7 +10,7 @@ import { EspnSource } from "./feeds/espn.ts";
 import { KalshiSource } from "./feeds/kalshi.ts";
 import { PolymarketSource } from "./feeds/polymarket.ts";
 import { allSports, isMonitored } from "./analysis/catalog.ts";
-import { evaluate } from "./analysis/pipeline.ts";
+import { evaluateAll } from "./analysis/pipeline.ts";
 import { settle } from "./settle.ts";
 import { Store } from "./store.ts";
 import { TelegramClient } from "./telegram.ts";
@@ -28,6 +28,17 @@ const MAX_CONCURRENT_FETCHES = 8;
  * Capped picks are skipped entirely (not saved), so a later cycle retries.
  */
 const MAX_ALERTS_PER_CYCLE = 5;
+
+/** Per-sport fairness cap: no single sport may dominate a cycle's alerts. */
+const MAX_ALERTS_PER_SPORT = 2;
+
+/** True when a non-live event started too long ago to trust (stale feed). */
+export function isStale(ev: LiveEvent, maxAgeHours = 6): boolean {
+  if (ev.isLive || !ev.startsAt) return false;
+  const kickoff = Date.parse(ev.startsAt);
+  if (!Number.isFinite(kickoff)) return false;
+  return Date.now() - kickoff > maxAgeHours * 3_600_000;
+}
 
 export const STOPWORDS = new Set(
   "vs v the fc cf sc ac united city real club de la le les at of and".split(" "),
@@ -97,6 +108,7 @@ export async function runCycle(
   http: Http,
 ): Promise<CycleStats> {
   const stats: CycleStats = { evaluated: 0, alerted: 0, discarded: 0, degraded: [], settled: 0 };
+  const sportAlerts: Record<string, number> = {};
   const remaining: Record<string, number> = { ...CALL_BUDGET };
 
   const jobs: Array<() => Promise<{ name: string; sport: string; events: LiveEvent[] }>> = [];
@@ -129,6 +141,7 @@ export async function runCycle(
     for (const src of SOURCES) {
       for (const ev of perSource.get(src.name) ?? []) {
         if (ev.markets.length === 0) continue;
+        if (isStale(ev)) continue;
         ev.sourceName = src.name;
         eventPool.push(ev);
       }
@@ -155,28 +168,51 @@ export async function runCycle(
       const bySource = new Map(members.map((e) => [e.sourceName, e]));
       const ev = bySource.get("espn") ?? members[0]!;
       const corroborating = members.filter((e) => e !== ev);
-      if (!isMonitored(ev.sport, ev.markets[0]!.marketType)) {
-        await store.upsertGap(ev.sport, ev.markets[0]!.marketType, "not-in-catalog");
-        continue;
+      for (const m of ev.markets) {
+        if (!isMonitored(ev.sport, m.marketType)) {
+          await store.upsertGap(ev.sport, m.marketType, "not-in-catalog");
+        }
       }
+      if (!ev.markets.some((m) => isMonitored(ev.sport, m.marketType))) continue;
       stats.evaluated++;
-      const sel = evaluate(ev, corroborating, cfg);
-      if (!sel) {
+      const sels = evaluateAll(ev, corroborating, cfg);
+      if (sels.length === 0) {
         stats.discarded++;
         continue;
       }
-      if (stats.alerted >= MAX_ALERTS_PER_CYCLE) {
-        stats.discarded++;
-        continue;
+      for (const sel of sels) {
+        if (stats.alerted >= MAX_ALERTS_PER_CYCLE) {
+          stats.discarded++;
+          continue;
+        }
+        if ((sportAlerts[ev.sport] ?? 0) >= MAX_ALERTS_PER_SPORT) {
+          stats.discarded++;
+          continue;
+        }
+        const selId = await store.saveSelection(sel);
+        if (!selId) continue; // duplicate open selection
+        stats.alerted++;
+        sportAlerts[ev.sport] = (sportAlerts[ev.sport] ?? 0) + 1;
+        await dispatch(store, tg, { ...sel, id: selId, status: "open" });
       }
-      const selId = await store.saveSelection(sel);
-      if (!selId) continue; // duplicate open selection
-      stats.alerted++;
-      await dispatch(store, tg, { ...sel, id: selId, status: "open" });
     }
   }
   stats.settled = await settleOpen(store, http);
   return stats;
+}
+
+/** Fuzzy-match a pick's fixture to a final score by label. */
+export function matchFinal(
+  matchLabel: string,
+  finals: Record<string, { home: number; away: number; label?: string }>,
+): { home: number; away: number } | null {
+  const probe: LiveEvent = { eventId: "", sport: "", matchLabel, isLive: false, markets: [], rawScore: "" };
+  for (const final of Object.values(finals)) {
+    if (!final.label) continue;
+    const other: LiveEvent = { eventId: "", sport: "", matchLabel: final.label, isLive: false, markets: [], rawScore: "" };
+    if (sameMatch(probe, other)) return { home: final.home, away: final.away };
+  }
+  return null;
 }
 
 export async function settleOpen(store: Store, http: Http): Promise<number> {
@@ -190,7 +226,10 @@ export async function settleOpen(store: Store, http: Http): Promise<number> {
   }
   let settled = 0;
   for (const sel of await store.getOpen()) {
-    const final = finals[String(sel.event_id)];
+    const direct = finals[String(sel.event_id)];
+    const final =
+      direct ??
+      matchFinal(sel.match_label, finals);
     if (!final) continue;
     const outcome = settle(
       { market_type: sel.market_type, outcome: sel.outcome, line: sel.line },

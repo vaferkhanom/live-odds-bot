@@ -77,6 +77,11 @@ class Store:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        try:
+            self.conn.execute("ALTER TABLE selections ADD COLUMN outcome_label TEXT")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists on older databases
 
     def save_selection(self, sel: dict) -> str | None:
         """Insert unless an open dup exists. Returns id or None if duplicate."""
@@ -90,11 +95,11 @@ class Store:
         sel_id = str(uuid.uuid4())
         self.conn.execute(
             "INSERT INTO selections (id,sport,match_label,event_id,market_type,line,"
-            "outcome,odds_decimal,tier,edge,ev,stake_cap,thesis,invalidation,sources,"
-            "status,detected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)",
+            "outcome,outcome_label,odds_decimal,tier,edge,ev,stake_cap,thesis,invalidation,sources,"
+            "status,detected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)",
             (sel_id, sel["sport"], sel["match_label"], sel["event_id"],
              sel["market_type"], sel.get("line"), sel["outcome"],
-             sel["odds_decimal"], sel["tier"], sel["edge"], sel["ev"],
+             sel.get("outcome_label"), sel["odds_decimal"], sel["tier"], sel["edge"], sel["ev"],
              sel["stake_cap"], sel["thesis"], sel["invalidation"],
              ",".join(sel["sources"]), _now()),
         )

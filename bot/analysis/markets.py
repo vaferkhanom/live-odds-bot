@@ -40,5 +40,10 @@ def monitored_markets(sport: str) -> list[str]:
     return [m for m, on in _load().get(sport, {}).items() if on]
 
 
+def unmonitored_markets(sport: str) -> list[str]:
+    """Catalog-declared gaps (e.g. player props): never monitored by design."""
+    return [m for m, on in _load().get(sport, {}).items() if not on]
+
+
 def all_sports() -> list[str]:
     return sorted(_load().keys())

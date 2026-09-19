@@ -78,5 +78,6 @@ class PolymarketSource(Source):
                     match_label=ev.get("title", "?"),
                     is_live=True,
                     markets=markets,
+                    starts_at=ev.get("startTime") or ev.get("gameStartTime") or None,
                 ))
         return events

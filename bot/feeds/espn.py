@@ -76,10 +76,12 @@ class EspnSource(Source):
                 is_live=(state == "in"),
                 markets=markets,
                 raw_score="",
+                starts_at=(ev.get("date") or None),
             ))
         # Scoreboards often omit odds; the per-event summary endpoint still
         # carries book prices. Backfill live events first, then pre-match
-        # events starting within 36h (weekend fixtures). Capped per cycle.
+        # events starting within the next 36h. Games that started more than
+        # 3h ago are stale (played yesterday) and are never backfilled.
         from datetime import datetime, timedelta, timezone
         now = datetime.now(timezone.utc)
         pending = []
@@ -93,7 +95,8 @@ class EspnSource(Source):
                 kickoff = datetime.fromisoformat(
                     next(e for e in (data.get("events") or [])
                          if str(e.get("id")) == ev.event_id).get("date", "").replace("Z", "+00:00"))
-                if kickoff - now < timedelta(hours=36):
+                delta = kickoff - now
+                if timedelta(hours=-3) <= delta <= timedelta(hours=36):
                     pending.append(ev)
             except Exception:
                 continue
@@ -157,6 +160,19 @@ class EspnSource(Source):
                 OutcomePrice(name="over", decimal_odds=_american_to_decimal(over)),
                 OutcomePrice(name="under", decimal_odds=_american_to_decimal(under)),
             ]))
+        spread = odds.get("spread")
+        try:
+            home_spread = float((odds.get("homeTeamOdds") or {}).get("spreadOdds")) \
+                if (odds.get("homeTeamOdds") or {}).get("spreadOdds") not in (None, "") else None
+            away_spread = float((odds.get("awayTeamOdds") or {}).get("spreadOdds")) \
+                if (odds.get("awayTeamOdds") or {}).get("spreadOdds") not in (None, "") else None
+        except (TypeError, ValueError):
+            home_spread = away_spread = None
+        if spread is not None and home_spread is not None and away_spread is not None:
+            found.append(MarketPrice(market_type="handicap", line=str(spread), outcomes=[
+                OutcomePrice(name="home", decimal_odds=_american_to_decimal(home_spread)),
+                OutcomePrice(name="away", decimal_odds=_american_to_decimal(away_spread)),
+            ]))
         return found
 
     def _parse_market(self, odds: dict, details: str) -> MarketPrice | None:
@@ -190,7 +206,11 @@ class EspnSource(Source):
         return MarketPrice(market_type=market_type, line=line, outcomes=outcomes)
 
     def fetch_finals(self) -> dict[str, dict]:
-        """One pass over league scoreboards: event_id -> {'home','away'} finals."""
+        """One pass over league scoreboards: event_id -> final with label.
+
+        Includes match labels so cross-source picks (prediction-market
+        event ids) can be settled by fuzzy fixture match.
+        """
         finals: dict[str, dict] = {}
         for path in SPORT_PATHS.values():
             try:
@@ -203,10 +223,13 @@ class EspnSource(Source):
                 if state != "post":
                     continue
                 try:
-                    paired = {c.get("homeAway"): int(c.get("score"))
-                              for c in comp.get("competitors") or []}
-                    finals[str(ev.get("id"))] = {"home": paired.get("home"),
-                                                 "away": paired.get("away")}
+                    competitors = comp.get("competitors") or []
+                    paired = {c.get("homeAway"): int(c.get("score")) for c in competitors}
+                    names = [c.get("team", {}).get("displayName", "?") for c in competitors]
+                    finals[str(ev.get("id"))] = {
+                        "home": paired.get("home"), "away": paired.get("away"),
+                        "label": " vs ".join(names) if names else ev.get("name", "?"),
+                    }
                 except (TypeError, ValueError):
                     continue
         return finals

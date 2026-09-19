@@ -21,10 +21,12 @@ export interface LiveEvent {
   markets: MarketPrice[];
   rawScore: string;
   sourceName?: string;
+  /** ISO kickoff/start time when provided. Used to drop stale fixtures. */
+  startsAt?: string | null;
 }
 
 export interface FinalsMap {
-  [eventId: string]: { home: number; away: number };
+  [eventId: string]: { home: number; away: number; label?: string };
 }
 
 export interface Source {

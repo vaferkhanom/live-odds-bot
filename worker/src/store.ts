@@ -12,6 +12,7 @@ export interface Selection {
   market_type: string;
   line: string | null;
   outcome: string;
+  outcome_label: string | null;
   odds_decimal: number;
   tier: string;
   edge: number;
@@ -75,12 +76,12 @@ export class Store {
     await this.db
       .prepare(
         "INSERT INTO selections (id,sport,match_label,event_id,market_type,line," +
-          "outcome,odds_decimal,tier,edge,ev,stake_cap,thesis,invalidation,sources," +
-          "status,detected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)",
+          "outcome,outcome_label,odds_decimal,tier,edge,ev,stake_cap,thesis,invalidation,sources," +
+          "status,detected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)",
       )
       .bind(
         id, sel.sport, sel.match_label, sel.event_id, sel.market_type, sel.line,
-        sel.outcome, sel.odds_decimal, sel.tier, sel.edge, sel.ev, sel.stake_cap,
+        sel.outcome, sel.outcome_label ?? null, sel.odds_decimal, sel.tier, sel.edge, sel.ev, sel.stake_cap,
         sel.thesis, sel.invalidation, sel.sources.join(","), utcNowIso(),
       )
       .run();
